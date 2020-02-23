@@ -30,16 +30,16 @@ import card as c
 import settings
 import simple_commands
 from actions import do_skip, do_play_card, do_draw, do_call_bluff, start_player_countdown
-from config import WAITING_TIME, DEFAULT_GAMEMODE, MIN_PLAYERS
+from config import (WAITING_TIME, DEFAULT_GAMEMODE, MIN_PLAYERS, SCORE_WIN,
+                    SCORE_DUEL, ADDITIONAL_POINT, PLAYER_THRESHOLD)
 from errors import (NoGameInChatError, LobbyClosedError, AlreadyJoinedError,
                     NotEnoughPlayersError, DeckEmptyError)
 from internationalization import _, __, user_locale, game_locales
 from results import (add_call_bluff, add_choose_color, add_draw, add_gameinfo,
                      add_no_game, add_not_started, add_other_cards, add_pass,
-                     add_card, add_mode_classic, add_mode_fast, add_mode_wild)
+                     add_card, add_mode_classic, add_mode_fast, add_mode_wild, add_mode_score)
 from shared_vars import gm, updater, dispatcher
 from simple_commands import help_handler
-from start_bot import start_bot
 from utils import display_name
 from utils import send_async, answer_async, error, TIMEOUT, user_is_creator_or_admin, user_is_creator, game_is_running
 
@@ -133,7 +133,11 @@ def kill_game(bot, update):
 @user_locale
 def join_game(bot, update):
     """Handler for the /join command"""
+    choice = [[InlineKeyboardButton(text=_("Choose the mode!"), switch_inline_query_current_chat='')]]
+    user = update.message.from_user
     chat = update.message.chat
+    games = gm.chatid_games.get(chat.id)
+    game = games[-1]
 
     if update.message.chat.type == 'private':
         help_handler(bot, update)
@@ -164,9 +168,15 @@ def join_game(bot, update):
                    reply_to_message_id=update.message.message_id)
 
     else:
-        send_async(bot, chat.id,
-                   text=_("Joined the game"),
-                   reply_to_message_id=update.message.message_id)
+        if user.id in game.owner:
+            send_async(bot, chat.id,
+                    text=_("Joined the game"),
+                    reply_markup=InlineKeyboardMarkup(choice),
+                    reply_to_message_id=update.message.message_id)
+        if user.id not in game.owner:
+                    send_async(bot, chat.id,
+                            text=_("Joined the game"),
+                            reply_to_message_id=update.message.message_id)
 
 
 @user_locale
@@ -370,12 +380,20 @@ def start_game(bot, update, args, job_queue):
                               "before you can start it").format(minplayers=MIN_PLAYERS))
 
         else:
+            player_num = len(game.players)
+            if player_num == 2:
+                game.win_score = SCORE_DUEL
+            else:
+                game.win_score = ADDITIONAL_POINT * player_num
             # Starting a game
             game.start()
 
             for player in game.players:
-                player.draw_first_hand()
-
+                if game.mode == 'score':
+                    player.draw_score_mode()
+                else:
+                    player.draw_first_hand()
+            choice = [[InlineKeyboardButton(text=_("Make your choice!"), switch_inline_query_current_chat='')]]
             first_message = (
                 __("First player: {name}\n"
                    "Use /close to stop people from joining the game.\n"
@@ -393,6 +411,7 @@ def start_game(bot, update, args, job_queue):
 
                 bot.sendMessage(chat.id,
                                 text=first_message,
+                                reply_markup=InlineKeyboardMarkup(choice),
                                 timeout=TIMEOUT)
 
             send_first()
@@ -594,6 +613,7 @@ def reply_to_query(bot, update):
                 add_mode_classic(results)
                 add_mode_fast(results)
                 add_mode_wild(results)
+                add_mode_score(results)
             else:
                 add_not_started(results)
 
@@ -693,9 +713,13 @@ def process_result(bot, update, job_queue):
         do_play_card(bot, player, result_id)
 
     if game_is_running(game):
+        nextplayer_message = (
+            __("Next player: {name}", multi=game.translate)
+            .format(name=display_name(game.current_player.user)))
+        choice = [[InlineKeyboardButton(text=_("Make your choice!"), switch_inline_query_current_chat='')]]
         send_async(bot, chat.id,
-                   text=__("Next player: {name}", multi=game.translate)
-                   .format(name=display_name(game.current_player.user)))
+                        text=nextplayer_message,
+                        reply_markup=InlineKeyboardMarkup(choice))
         start_player_countdown(bot, game, job_queue)
 
 
@@ -734,5 +758,6 @@ settings.register()
 dispatcher.add_handler(MessageHandler(Filters.status_update, status_update))
 dispatcher.add_error_handler(error)
 
-start_bot(updater)
+
+updater.start_polling(clean=True)
 updater.idle()

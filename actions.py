@@ -7,12 +7,13 @@ from datetime import datetime
 
 from telegram import Message, Chat
 
-from config import TIME_REMOVAL_AFTER_SKIP, MIN_FAST_TURN_TIME
+from config import TIME_REMOVAL_AFTER_SKIP, MIN_FAST_TURN_TIME, SCORE_WIN
 from errors import DeckEmptyError, NotEnoughPlayersError
 from internationalization import __, _
 from shared_vars import gm
+from time import sleep
 from user_setting import UserSetting
-from utils import send_async, display_name, game_is_running
+from utils import send_async, display_name, game_is_running, TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,11 @@ def do_skip(bot, player, job_queue=None):
         if (skipped_player.waiting_time < 0):
             skipped_player.waiting_time = 0
 
+        # if player get skipped after playing wildcard or +4
+        # before getting to choose color, then choose color randomly
+        if game.choosing_color:
+            game.last_card.color = random.choice(c.COLORS)
+
         try:
             skipped_player.draw()
         except DeckEmptyError:
@@ -45,13 +51,13 @@ def do_skip(bot, player, job_queue=None):
 
         n = skipped_player.waiting_time
         send_async(bot, chat.id,
-                   text=__("Waiting time to skip this player has "
+                   text="Waiting time to skip this player has "
                         "been reduced to {time} seconds.\n"
-                        "Next player: {name}", multi=game.translate)
+                        "Next player: {name}"
                    .format(time=n,
                            name=display_name(next_player.user))
-        )
-        logger.info("{player} was skipped! "
+            )
+        logger.info("{player} was skipped!. "
                     .format(player=display_name(player.user)))
         game.turn()
         if job_queue:
@@ -61,21 +67,21 @@ def do_skip(bot, player, job_queue=None):
         try:
             gm.leave_game(skipped_player.user, chat)
             send_async(bot, chat.id,
-                       text=__("{name1} ran out of time "
+                       text="{name1} ran out of time "
                             "and has been removed from the game!\n"
-                            "Next player: {name2}", multi=game.translate)
+                            "Next player: {name2}"
                        .format(name1=display_name(skipped_player.user),
                                name2=display_name(next_player.user)))
-            logger.info("{player} was skipped! "
+            logger.info("{player} was skipped!. "
                     .format(player=display_name(player.user)))
             if job_queue:
                 start_player_countdown(bot, game, job_queue)
 
         except NotEnoughPlayersError:
             send_async(bot, chat.id,
-                       text=__("{name} ran out of time "
+                       text="{name} ran out of time "
                                "and has been removed from the game!\n"
-                               "The game ended.", multi=game.translate)
+                               "The game ended."
                        .format(name=display_name(skipped_player.user)))
 
             gm.end_game(chat, skipped_player.user)
@@ -98,15 +104,61 @@ def do_play_card(bot, player, result_id):
         us.cards_played += 1
 
     if game.choosing_color:
-        send_async(bot, chat.id, text=__("Please choose a color", multi=game.translate))
+        send_async(bot, chat.id, text=_("Please choose a color"))
 
     if len(player.cards) == 1:
         send_async(bot, chat.id, text="UNO!")
 
     if len(player.cards) == 0:
-        send_async(bot, chat.id,
-                   text=__("{name} won!", multi=game.translate)
-                   .format(name=user.first_name))
+        if game.mode != 'score':
+            send_async(bot, chat.id, text=__("{name} won!", multi=game.translate).format(name=user.first_name))
+
+        if game.mode == "score":
+            game.add_score(player)
+            score = sum([n[0] for n in game.last_round_score])
+            bot.sendMessage(chat.id, text=__("Added {pt} point", "Added {pt} points", score).format(pt=score) + "\n" + ("Points to win: {score}").format(score=game.win_score) + "\n\n" + ("Current standings:\n") +
+            "\n".join([
+                "{no}. {name}: {pt}".format(
+                    no=i + 1,
+                    name=x[0].user.first_name,
+                    pt=x[1])
+                for i, x in enumerate(
+                    sorted(game.get_scores(),
+                           key=lambda x: x[1],
+                           reverse=True))]) +
+                           "\n\nCard Opponents Players:\n" + " | ".join(
+                               ["{cl} {vl} (+{pt})"
+                                .format(cl=c.COLOR_ICONS[n[1].color or 'x'],
+                                        vl=n[1].value or n[1].special,
+                                        pt=n[0]).replace('draw_four', '+4').replace('draw', '+2').replace('colorchooser', 'Color Chooser').replace('skip', 'Skip').replace('reverse', 'Reverse')
+                                for n in sorted(game.last_round_score,
+                                                key=lambda x: x[0])]))
+
+
+            players_cache = game.players
+            highest = sorted(zip(players_cache, map(
+                game.get_score, players_cache
+            )), key=lambda x: x[1])[-1]
+            if highest[1] >= game.win_score:
+                if game.mode == 'score':
+                    send_async(bot, chat.id, text=__("Game ended! {name} won the game!", multi=game.translate).format(name=highest[0].user.first_name))
+                if us.stats:
+                    us.first_places += 1
+                for player in players_cache:
+                    us_ = UserSetting.get(id=player.user.id)
+                    if not us:
+                        us_ = UserSetting(id=player.user.id)
+                    us_.games_played += 1
+                gm.end_game(chat, user)
+            else:
+                sleep(5)
+                game.reset_cards()
+                game.new_round()
+                bot.sendSticker(chat.id,
+                                sticker=c.STICKERS[str(game.last_card)],
+                                timeout=TIMEOUT)
+            return
+            # If game mode is "score", 'do_play_card' should stop here
 
         if us.stats:
             us.games_played += 1
@@ -116,16 +168,9 @@ def do_play_card(bot, player, result_id):
 
         game.players_won += 1
 
-        try:
-            gm.leave_game(user, chat)
-        except NotEnoughPlayersError:
+        if game.mode != "score":
             send_async(bot, chat.id,
                        text=__("Game ended!", multi=game.translate))
-
-            us2 = UserSetting.get(id=game.current_player.user.id)
-            if us2 and us2.stats:
-                us2.games_played += 1
-
             gm.end_game(chat, user)
 
 

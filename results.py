@@ -130,6 +130,19 @@ def add_mode_wild(results):
     )
 
 
+def add_mode_score(results):
+    """Change mode to classic"""
+    results.append(
+        InlineQueryResultArticle(
+            "mode_score",
+            title=_("💯 Score mode"),
+            input_message_content=
+            InputTextMessageContent(_('Kaching~ 💯'))
+        )
+    )
+
+
+
 def add_draw(player, results):
     """Add option to draw"""
     n = player.game.draw_counter or 1
@@ -188,8 +201,8 @@ def add_card(game, card, results, can_play):
 
     if can_play:
         results.append(
-            Sticker(str(card), sticker_file_id=c.STICKERS[str(card)])
-        )
+            Sticker(str(card), sticker_file_id=c.STICKERS[str(card)], input_message_content=InputTextMessageContent("Card Played: {card}".format(card=repr(card).replace('Draw Four', '+4').replace('Draw', '+2').replace('Colorchooser', 'Color Chooser')))
+        ))
     else:
         results.append(
             Sticker(str(uuid4()), sticker_file_id=c.STICKERS_GREY[str(card)],
@@ -198,15 +211,33 @@ def add_card(game, card, results, can_play):
 
 
 def game_info(game):
-    players = player_list(game)
+    if game.mode == 'score':
+        players = score_list(game)
+    else:
+        players = player_list(game)
+    players_numbered = [
+        '{}. {}'.format(i + 1, p)
+        for i, p in enumerate(players)
+    ]
     return InputTextMessageContent(
         _("Current player: {name}")
         .format(name=display_name(game.current_player.user)) +
         "\n" +
-        _("Last card: {card}").format(card=repr(game.last_card)) +
-        "\n" +
-        _("Player: {player_list}",
-          "Players: {player_list}",
+        _("Last card: {card}").format(card=repr(game.last_card).replace('Draw Four', '+4').replace('Draw', '+2').replace('Colorchooser', 'Color Chooser')) +
+        "\n" + "Points to win: {points}".format(points=game.win_score) + "\n" +
+        _("Player: \n{player_list}",
+          "Players: \n{player_list}",
           len(players))
-        .format(player_list=" -> ".join(players))
+        .format(player_list="\n".join(players_numbered))
     )
+def score_list(game):
+    scores = [game.get_score(player) for player in game.players]
+    plist = [_("{name} ({number} card)",
+               "{name} ({number} cards)",
+               len(player.cards))
+             .format(name=player.user.first_name, number=len(player.cards))
+             for player in game.players]
+    return [s + " " +
+            _("[{point} point]", "[{point} points]", scores[i])
+            .format(point=scores[i])
+            for i, s in enumerate(plist)]

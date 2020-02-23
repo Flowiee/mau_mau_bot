@@ -66,6 +66,15 @@ class Player(object):
                 self.game.deck.dismiss(card)
 
             raise
+    def draw_score_mode(self):
+        try:
+            for _ in range(5):
+                self.cards.append(self.game.deck.draw())
+        except DeckEmptyError:
+            for card in self.cards:
+                self.game.deck.dismiss(card)
+
+            raise
 
     def leave(self):
         """Removes player from the game and closes the gap in the list"""
